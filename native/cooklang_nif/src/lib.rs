@@ -5,7 +5,8 @@
 
 use cooklang::error::SourceReport;
 use cooklang::model::Recipe;
-use cooklang::{Converter, CooklangParser, Extensions};
+use cooklang::parser::{self, Event, PullParser};
+use cooklang::{Converter, CooklangParser, Extensions, Located, Span};
 use serde::Serialize;
 use std::collections::HashMap;
 
@@ -90,6 +91,16 @@ enum ItemOutput {
     Cookware { index: usize },
     #[serde(rename = "timer")]
     Timer { index: usize },
+}
+
+/// A part of the source with its kind. `start` and `end` are byte offsets.
+#[derive(Serialize)]
+struct TokenOutput {
+    kind: &'static str,
+    start: usize,
+    end: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    text: Option<String>,
 }
 
 // ============================================================================
@@ -182,6 +193,212 @@ fn parse_aisle_config(input: &str) -> Result<String, String> {
         }
         Err(e) => Err(e.to_string()),
     }
+}
+
+/// Split a Cooklang recipe string into tokens, with the kind and byte
+/// offsets of each part.
+///
+/// The tokens come from the pull parser, which recovers from errors, so a
+/// recipe with errors still has tokens.
+/// Returns `{:ok, json_string}` on success or `{:error, message}` on failure.
+#[rustler::nif]
+fn tokens(input: &str, all_extensions: bool) -> Result<String, String> {
+    let extensions = if all_extensions {
+        Extensions::all()
+    } else {
+        Extensions::empty()
+    };
+
+    let output = Tokenizer::new(input).run(extensions);
+    serde_json::to_string(&output).map_err(|e| format!("JSON serialization error: {}", e))
+}
+
+// ============================================================================
+// Tokens
+// ============================================================================
+
+/// Collects the tokens of one source. `covered` marks each byte that an event
+/// accounts for. The parser emits no event for a comment, so the comments are
+/// in the bytes that stay uncovered.
+struct Tokenizer<'i> {
+    input: &'i str,
+    tokens: Vec<TokenOutput>,
+    covered: Vec<bool>,
+}
+
+impl<'i> Tokenizer<'i> {
+    fn new(input: &'i str) -> Self {
+        Self {
+            input,
+            tokens: Vec::new(),
+            covered: vec![false; input.len()],
+        }
+    }
+
+    fn run(mut self, extensions: Extensions) -> Vec<TokenOutput> {
+        for event in PullParser::new(self.input, extensions) {
+            match event {
+                Event::YAMLFrontMatter(text) => self.front_matter(text.span()),
+                Event::Metadata { key, value } => {
+                    self.push("metadata_key", key.span(), None);
+                    self.push("metadata_value", value.span(), None);
+                    self.cover(key.span());
+                    self.cover(value.span());
+                }
+                Event::Section { name: Some(name) } => {
+                    self.push("section", name.span(), None);
+                    self.cover(name.span());
+                }
+                Event::Text(text) => {
+                    for fragment in text.fragments() {
+                        self.cover(fragment.span());
+                    }
+                }
+                Event::Ingredient(ingredient) => self.ingredient(&ingredient),
+                Event::Cookware(cookware) => self.cookware(&cookware),
+                Event::Timer(timer) => self.timer(&timer),
+                _ => {}
+            }
+        }
+
+        self.comments();
+        // A component comes before the parts inside it.
+        self.tokens
+            .sort_by_key(|token| (token.start, std::cmp::Reverse(token.end)));
+        self.tokens
+    }
+
+    /// The YAML front matter, with the `---` lines around it.
+    fn front_matter(&mut self, span: Span) {
+        let end = self.input[span.end()..]
+            .find('\n')
+            .map_or(self.input.len(), |offset| span.end() + offset);
+        let block = Span::from(0..end);
+        self.push("front_matter", block, None);
+        self.cover(block);
+    }
+
+    fn ingredient(&mut self, ingredient: &Located<parser::Ingredient>) {
+        let name = ingredient.name.text_trimmed().into_owned();
+        self.push("ingredient", ingredient.span(), Some(name));
+        self.push("modifiers", ingredient.modifiers.span(), None);
+        self.push("name", ingredient.name.span(), None);
+        self.optional("alias", ingredient.alias.as_ref().map(|alias| alias.span()));
+        self.quantity(ingredient.quantity.as_ref());
+        self.optional("note", ingredient.note.as_ref().map(|note| note.span()));
+        self.cover(ingredient.span());
+    }
+
+    fn cookware(&mut self, cookware: &Located<parser::Cookware>) {
+        let name = cookware.name.text_trimmed().into_owned();
+        self.push("cookware", cookware.span(), Some(name));
+        self.push("modifiers", cookware.modifiers.span(), None);
+        self.push("name", cookware.name.span(), None);
+        self.optional("alias", cookware.alias.as_ref().map(|alias| alias.span()));
+        self.quantity(cookware.quantity.as_ref());
+        self.optional("note", cookware.note.as_ref().map(|note| note.span()));
+        self.cover(cookware.span());
+    }
+
+    fn timer(&mut self, timer: &Located<parser::Timer>) {
+        let name = timer
+            .name
+            .as_ref()
+            .map(|name| name.text_trimmed().into_owned());
+        self.push("timer", timer.span(), name);
+        self.optional("name", timer.name.as_ref().map(|name| name.span()));
+        self.quantity(timer.quantity.as_ref());
+        self.cover(timer.span());
+    }
+
+    fn quantity(&mut self, quantity: Option<&Located<parser::Quantity>>) {
+        if let Some(quantity) = quantity {
+            self.push("quantity", quantity.value.span(), None);
+            self.optional("fixed_marker", quantity.value.scaling_lock);
+            self.optional("unit", quantity.unit.as_ref().map(|unit| unit.span()));
+        }
+    }
+
+    /// A `--` comment runs to the end of the line. A `[- -]` comment runs to
+    /// its closing `-]`. Both markers are ASCII, so each slice is valid text.
+    fn comments(&mut self) {
+        let bytes = self.input.as_bytes();
+        let mut index = 0;
+
+        while index + 1 < bytes.len() {
+            if self.covered[index] || self.covered[index + 1] {
+                index += 1;
+                continue;
+            }
+
+            let end = match (bytes[index], bytes[index + 1]) {
+                (b'-', b'-') => self.input[index..]
+                    .find('\n')
+                    .map_or(bytes.len(), |offset| index + offset),
+                (b'[', b'-') => self.input[index + 2..]
+                    .find("-]")
+                    .map_or(bytes.len(), |offset| index + 2 + offset + 2),
+                _ => {
+                    index += 1;
+                    continue;
+                }
+            };
+
+            self.push("comment", Span::from(index..end), None);
+            index = end;
+        }
+    }
+
+    fn optional(&mut self, kind: &'static str, span: Option<Span>) {
+        if let Some(span) = span {
+            self.push(kind, span, None);
+        }
+    }
+
+    /// Adds a token without the whitespace around it, unless it is empty. If
+    /// cooklang-rs points inside a multi-byte character, the offsets move to
+    /// character boundaries. Some spans include the spaces around a name, for
+    /// example the key of `>> course: dinner`.
+    fn push(&mut self, kind: &'static str, span: Span, text: Option<String>) {
+        let start = floor_char_boundary(self.input, span.start());
+        let end = ceil_char_boundary(self.input, span.end()).max(start);
+        let slice = &self.input[start..end];
+        let end = start + slice.trim_end().len();
+        let start = end - slice.trim().len();
+
+        if start < end {
+            self.tokens.push(TokenOutput {
+                kind,
+                start,
+                end,
+                text,
+            });
+        }
+    }
+
+    fn cover(&mut self, span: Span) {
+        let end = span.end().min(self.covered.len());
+        let start = span.start().min(end);
+        self.covered[start..end].fill(true);
+    }
+}
+
+/// The largest character boundary of `input` at or before `offset`.
+fn floor_char_boundary(input: &str, offset: usize) -> usize {
+    let mut offset = offset.min(input.len());
+    while !input.is_char_boundary(offset) {
+        offset -= 1;
+    }
+    offset
+}
+
+/// The smallest character boundary of `input` at or after `offset`.
+fn ceil_char_boundary(input: &str, offset: usize) -> usize {
+    let mut offset = offset.min(input.len());
+    while !input.is_char_boundary(offset) {
+        offset += 1;
+    }
+    offset
 }
 
 // ============================================================================
