@@ -90,8 +90,12 @@ defmodule CooklangEx.Recipe.Quantity do
   Examples:
   - `@eggs{3}` -> value: 3, unit: nil, scalable: true
   - `@flour{200%g}` -> value: 200, unit: "g", scalable: true
+  - `@eggs{2-4}` -> value: {2, 4}, unit: nil, scalable: true
   - `@salt{=1%tsp}` -> value: 1, unit: "tsp", scalable: false
   """
+
+  @typedoc "A range quantity, for example `@eggs{2-4}`."
+  @type range :: {low :: number(), high :: number()}
 
   @typedoc """
   Whether the quantity changes when the recipe scales to other servings.
@@ -102,7 +106,7 @@ defmodule CooklangEx.Recipe.Quantity do
   @type scalable :: boolean()
 
   @type t :: %__MODULE__{
-          value: number() | String.t() | nil,
+          value: number() | range() | String.t() | nil,
           unit: String.t() | nil,
           scalable: scalable()
         }
@@ -116,7 +120,7 @@ defmodule CooklangEx.Recipe.Quantity do
     value =
       case data["value"] do
         %{"Number" => n} -> n
-        %{"Range" => %{"start" => s, "end" => e}} -> {s, e}
+        %{"start" => s, "end" => e} -> {s, e}
         %{"Text" => t} -> t
         n when is_number(n) -> n
         other -> other
