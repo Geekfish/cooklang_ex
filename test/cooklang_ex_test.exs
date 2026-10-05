@@ -89,6 +89,51 @@ defmodule CooklangExTest do
     end
   end
 
+  describe "parse/2 diagnostics" do
+    @recipe_with_errors """
+    Chop @onion{1}.
+
+    Add @flour{%g} and stir.
+
+    Add @salt{=} to taste.
+    """
+
+    test "returns a ParseError with a diagnostic and a position for each error" do
+      assert {:error, %CooklangEx.ParseError{} = error} = CooklangEx.parse(@recipe_with_errors)
+
+      assert error.message == "Empty quantity value\nEmpty quantity value"
+
+      assert [first, second] = error.diagnostics
+      assert %CooklangEx.Diagnostic{severity: :error, message: "Empty quantity value"} = first
+
+      # cooklang-rs marks the empty point where the value is missing: before `%g`.
+      assert [
+               %CooklangEx.Diagnostic.Label{line: 3, column: 12, message: "add value here"} =
+                 label
+             ] =
+               first.labels
+
+      assert label.start == label.end
+      assert binary_part(@recipe_with_errors, label.start, 2) == "%g"
+
+      assert [%CooklangEx.Diagnostic.Label{line: 5, column: 12}] = second.labels
+    end
+
+    test "returns warnings with positions in recipe.diagnostics" do
+      assert {:ok, recipe} = CooklangEx.parse("Stir.\nWait ~{10}.\n")
+
+      assert recipe.warnings == ["Invalid timer quantity: missing unit"]
+
+      assert [
+               %CooklangEx.Diagnostic{
+                 severity: :warning,
+                 message: "Invalid timer quantity: missing unit",
+                 labels: [%CooklangEx.Diagnostic.Label{line: 2} | _]
+               }
+             ] = recipe.diagnostics
+    end
+  end
+
   describe "parse_and_scale/2" do
     test "scales ingredient quantities" do
       recipe_text = """
@@ -169,6 +214,12 @@ defmodule CooklangExTest do
       # In practice, most input will parse (possibly with warnings)
       recipe = CooklangEx.parse!("Just plain text")
       assert recipe.ingredients == []
+    end
+
+    test "raises a ParseError with the joined messages" do
+      assert_raise CooklangEx.ParseError, "Empty quantity value", fn ->
+        CooklangEx.parse!("Add @flour{%g}.")
+      end
     end
   end
 end

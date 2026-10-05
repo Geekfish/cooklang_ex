@@ -402,9 +402,9 @@ defmodule CooklangExEdgeCasesTest do
           # Might succeed with default servings
           :ok
 
-        {:error, reason} ->
-          assert is_binary(reason)
-          assert String.length(reason) > 0
+        {:error, %CooklangEx.ParseError{message: message}} ->
+          assert is_binary(message)
+          assert String.length(message) > 0
       end
     end
 
