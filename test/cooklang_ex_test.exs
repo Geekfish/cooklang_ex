@@ -109,6 +109,17 @@ defmodule CooklangExTest do
     end
   end
 
+  describe "parse/2 missing quantities" do
+    test "returns no quantity for empty braces, the same as for no braces" do
+      assert {:ok, recipe} = CooklangEx.parse("Add @salt{}, @pepper and use a #pan{}.")
+
+      assert [%{name: "salt", quantity: nil}, %{name: "pepper", quantity: nil}] =
+               recipe.ingredients
+
+      assert [%{name: "pan", quantity: nil}] = recipe.cookware
+    end
+  end
+
   describe "parse_and_scale/2" do
     test "scales ingredient quantities" do
       recipe_text = """
