@@ -88,17 +88,27 @@ defmodule CooklangEx.Recipe.Quantity do
   Represents a quantity with an optional value and unit.
 
   Examples:
-  - `@eggs{3}` -> value: 3, unit: nil
-  - `@flour{200%g}` -> value: 200, unit: "g"
+  - `@eggs{3}` -> value: 3, unit: nil, scalable: true
+  - `@flour{200%g}` -> value: 200, unit: "g", scalable: true
+  - `@salt{=1%tsp}` -> value: 1, unit: "tsp", scalable: false
   - `@salt{}` -> value: nil, unit: nil (some amount)
   """
 
+  @typedoc """
+  Whether the quantity changes when the recipe scales to other servings.
+
+  Ingredient quantities scale unless they are fixed with `=`, for example
+  `@salt{=1%tsp}`. Cookware and timer quantities never scale.
+  """
+  @type scalable :: boolean()
+
   @type t :: %__MODULE__{
           value: number() | String.t() | nil,
-          unit: String.t() | nil
+          unit: String.t() | nil,
+          scalable: scalable()
         }
 
-  defstruct value: nil, unit: nil
+  defstruct value: nil, unit: nil, scalable: false
 
   @doc false
   def from_map(nil), do: nil
@@ -115,7 +125,8 @@ defmodule CooklangEx.Recipe.Quantity do
 
     %__MODULE__{
       value: value,
-      unit: data["unit"]
+      unit: data["unit"],
+      scalable: data["scalable"] == true
     }
   end
 end
