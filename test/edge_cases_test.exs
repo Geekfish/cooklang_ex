@@ -405,12 +405,22 @@ defmodule CooklangExEdgeCasesTest do
                "Scaling error: Cannot scale recipe: servings metadata is not a valid number"
     end
 
-    test "parse! returns a recipe when the input has no errors" do
-      # Since cooklang-rs is permissive, we can't easily trigger a parse error
-      # But we can test that parse! returns a recipe or raises properly
-      recipe_text = "Add @salt{}."
-      recipe = CooklangEx.parse!(recipe_text)
-      assert %CooklangEx.Recipe{} = recipe
+    test "parse! raises ParseError with message" do
+      # Two errors: the message joins both, and the error keeps both diagnostics.
+      recipe_text = "Add @flour{%g}.\nAdd @eggs{99999999999/2}.\n"
+
+      error =
+        assert_raise CooklangEx.ParseError, fn ->
+          CooklangEx.parse!(recipe_text)
+        end
+
+      assert Exception.message(error) ==
+               "Empty quantity value\nError parsing integer number"
+
+      assert [
+               %CooklangEx.Diagnostic{message: "Empty quantity value"},
+               %CooklangEx.Diagnostic{message: "Error parsing integer number"}
+             ] = error.diagnostics
     end
   end
 end
