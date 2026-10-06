@@ -52,6 +52,7 @@ defmodule CooklangEx do
   alias CooklangEx.Native
   alias CooklangEx.ParseError
   alias CooklangEx.Recipe
+  alias CooklangEx.Token
 
   @type parse_option ::
           {:extensions, [atom()]}
@@ -212,6 +213,40 @@ defmodule CooklangEx do
 
       {:error, json} ->
         {:error, ParseError.from_json(json)}
+    end
+  end
+
+  @doc """
+  Split a recipe string into tokens, with the kind and position of each part.
+
+  `parse/2` gives no positions. The tokens give them, for example to
+  highlight a recipe or to point at an ingredient name. They come from the
+  cooklang-rs pull parser, which recovers from errors, so a recipe that
+  `parse/2` rejects still has tokens. See `CooklangEx.Token`.
+
+  Returns `{:ok, tokens}`, ordered by `start`. A component comes before the
+  parts inside it.
+
+  ## Options
+
+  - `:all_extensions` - Enable all extensions (default: true)
+
+  ## Examples
+
+      iex> {:ok, tokens} = CooklangEx.tokens("Add @salt{1%tsp}.")
+      iex> Enum.map(tokens, &{&1.kind, &1.start, &1.end})
+      [{:ingredient, 4, 16}, {:name, 5, 9}, {:quantity, 10, 11}, {:unit, 12, 15}]
+  """
+  @spec tokens(String.t(), [parse_option()]) :: {:ok, [Token.t()]} | {:error, String.t()}
+  def tokens(input, opts \\ []) when is_binary(input) do
+    all_extensions = Keyword.get(opts, :all_extensions, true)
+
+    case Native.tokens(input, all_extensions) do
+      {:ok, json} ->
+        {:ok, json |> Jason.decode!() |> Enum.map(&Token.from_map/1)}
+
+      {:error, _} = error ->
+        error
     end
   end
 

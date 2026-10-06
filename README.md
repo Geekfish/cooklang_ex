@@ -217,6 +217,15 @@ Extract just the metadata map.
 {:ok, metadata} = CooklangEx.metadata(text)
 ```
 
+### `CooklangEx.tokens/2`
+
+Split a recipe into tokens, with the kind and byte offsets of each part, for example to highlight a recipe. A recipe with errors still has tokens.
+
+```elixir
+{:ok, tokens} = CooklangEx.tokens("Add @salt{1%tsp}.")
+# => [%CooklangEx.Token{kind: :ingredient, start: 4, end: 16, text: "salt"}, ...]
+```
+
 ## Extensions
 
 The parser supports several extensions to the base Cooklang specification.

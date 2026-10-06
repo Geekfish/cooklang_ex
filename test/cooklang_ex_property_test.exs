@@ -11,6 +11,20 @@ defmodule CooklangExPropertyTest do
       end
     end
 
+    property "tokens are ordered and slice valid text for any input" do
+      markup = String.to_charlist("@#~{}%=()[]-|>&?+:\n aé€😀")
+
+      check all(input <- one_of([string(:printable), string(markup, max_length: 60)])) do
+        assert {:ok, tokens} = CooklangEx.tokens(input)
+        assert tokens == Enum.sort_by(tokens, &{&1.start, -&1.end})
+
+        for token <- tokens do
+          assert 0 <= token.start and token.start < token.end and token.end <= byte_size(input)
+          assert String.valid?(binary_part(input, token.start, token.end - token.start))
+        end
+      end
+    end
+
     property "parsing empty strings always succeeds" do
       check all(whitespace <- string([?\s, ?\n, ?\t, ?\r], min_length: 0, max_length: 100)) do
         assert {:ok, recipe} = CooklangEx.parse(whitespace)

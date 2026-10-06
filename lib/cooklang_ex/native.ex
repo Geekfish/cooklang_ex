@@ -18,6 +18,10 @@ defmodule CooklangEx.Native do
     do: :erlang.nif_error(:nif_not_loaded)
 
   @doc false
+  @spec tokens(String.t(), boolean()) :: {:ok, String.t()} | {:error, String.t()}
+  def tokens(_input, _all_extensions), do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc false
   @spec parse_aisle_config(String.t()) :: {:ok, String.t()} | {:error, String.t()}
   def parse_aisle_config(_input), do: :erlang.nif_error(:nif_not_loaded)
 end
